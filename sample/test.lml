@@ -1,0 +1,45 @@
+
+
+(defproc say-hello ()
+  (putc 72)
+  (putc 101)
+  (putc 108)
+  (putc 108)
+  (putc 111)
+  (putc 44)
+  (putc 32)
+  (putc 119)
+  (putc 111)
+  (putc 114)
+  (putc 108)
+  (putc 100)
+  (putc 33))
+
+
+(defproc fib (x)
+  (if (eq x 0) 
+      0
+      (if (eq x 1)
+          1
+          (add (fib (sub x 1)) (fib (sub x 2))))))
+
+
+(defproc fib-loop (x)
+  (let1 i 0
+    (let1 x0 0
+      (let1 x1 1
+        (while (lt i x)
+          (set! i (add i 1))
+          (let1 y (add x0 x1)
+            (set! x0 x1)
+            (set! x1 y)))
+        x0))))
+
+
+(defproc main ()
+  (say-hello) ; ==> Hello, world!
+  (newline)
+  (putint (fib 10)) ; ==> 55
+  (newline)
+  (putint (fib-loop 10)) ; ==> 55
+  (newline)) 
