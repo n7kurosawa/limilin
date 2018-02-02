@@ -1,4 +1,5 @@
 
+(defrecord pair (fst int) (snd int))
 
 (defproc say-hello ()
   (putc 72)
