@@ -11,8 +11,8 @@ import qualified Parser as P
 
 data MEnv = MEnv 
   { menvGenerator :: Int
-  , menvUserFun   :: (Map.Map String Int)
-  , menvVarTable  :: (Set.Set String)
+  , menvUserFun   :: (Map.Map String [TypeName])
+  , menvVarTable  :: (Map.Map String TypeName)
   }
 newtype M a = M { runM :: S.State MEnv a } deriving (Functor, Applicative, Monad, S.MonadState MEnv)
 
@@ -20,7 +20,7 @@ data Type = TypeInt | TypeRecord [Bind]
 type TypeName = String
 type Bind = (String, TypeName)
 
-data Func = Func [String] Expr
+data Func = Func [Bind] Expr
 
 data Decl = DeclFunc String Func | DeclType String Type
 
@@ -28,28 +28,28 @@ data Decl = DeclFunc String Func | DeclType String Type
 -- todo: check built-in syntax
 
 builtinFuns = 
-  [ ("add",2)
-  , ("sub",2)
-  , ("mul",2)
-  , ("div",2)
-  , ("mod",2)
-  , ("neg",1)
-  , ("and",2)
-  , ("or",2)
-  , ("xor",2)
-  , ("not",1)
-  , ("eq",2)
-  , ("neq",2)
-  , ("lt",2)
-  , ("gt",2)
-  , ("le",2)
-  , ("ge",2)
-  , ("putint",1)
-  , ("putc",1)
-  , ("newline",0)
+  [ ("add",["int","int"])
+  , ("sub",["int","int"])
+  , ("mul",["int","int"])
+  , ("div",["int","int"])
+  , ("mod",["int","int"])
+  , ("neg",["int"])
+  , ("and",["int","int"])
+  , ("or",["int","int"])
+  , ("xor",["int","int"])
+  , ("not",["int"])
+  , ("eq",["int","int"])
+  , ("neq",["int","int"])
+  , ("lt",["int","int"])
+  , ("gt",["int","int"])
+  , ("le",["int","int"])
+  , ("ge",["int","int"])
+  , ("putint",["int"])
+  , ("putc",["int"])
+  , ("newline",[])
   ]
 
-emptyMEnv = MEnv 0 (Map.fromList builtinFuns) (Set.empty)
+emptyMEnv = MEnv 0 (Map.fromList builtinFuns) (Map.empty)
 
 
 
@@ -72,11 +72,11 @@ genVar = do
   S.put $ menv{ menvGenerator = i + 1 }
   return ("_g" ++ show i)
 
-localVar :: [String] -> M a -> M a
+localVar :: [Bind] -> M a -> M a
 localVar names m = do
   menv <- S.get
   let varmap = menvVarTable menv
-  S.put $ menv{ menvVarTable = (Set.union (Set.fromList names) varmap) }
+  S.put $ menv{ menvVarTable = (Map.union (Map.fromList names) varmap) }
   r <- m
   S.put $ menv
   return r
@@ -84,29 +84,29 @@ localVar names m = do
 checkVar :: String -> M a -> M a
 checkVar name m = do
   v <- menvVarTable <$> S.get
-  if Set.member name v then m else error ("unknown variable: "++name)
+  if Map.member name v then m else error ("unknown variable: "++name)
 
-addFun :: String -> Int -> M ()
-addFun name ary = do
+addFun :: String -> [TypeName] -> M ()
+addFun name pty = do
   menv <- S.get
   let fnmap = menvUserFun menv
   if Map.member name fnmap
     then error ("redefinition of function: " ++ name)
-    else S.put $ menv{ menvUserFun = Map.insert name ary fnmap }
+    else S.put $ menv{ menvUserFun = Map.insert name pty fnmap }
 
 checkFun :: String -> Int -> M a -> M a
-checkFun name ary m = do
+checkFun name i m = do
   menv <- S.get
   case Map.lookup name (menvUserFun menv) of
-    Just i
-      | i == ary  -> m
-      | otherwise -> error "arity error"
+    Just ty
+      | length ty == i -> m
+      | otherwise -> error "arity does not match"
     Nothing       -> error "undefiend function"
 
 
 mangleFun f = "m_" ++ mangleName f
 mangleType t = "t_" ++ mangleName t
-mangleVar v = "v_" ++ mangleName v
+mangleVar v = "m_" ++ mangleName v
 
 mangleName xs = concatMap conv xs 
  where
@@ -131,7 +131,7 @@ showPrototypes = do
   menv <- S.get
   return $ map (uncurry proto) $ Map.toList (menvUserFun menv)
  where
-  proto name arity = "int " ++ mangleFun name ++ "(" ++ intercalate "," (take arity $ repeat "int") ++ ");"
+  proto name pty = "int " ++ mangleFun name ++ "(" ++ intercalate "," (map mangleType pty) ++ ");"
 
 
 compileExpr :: String -> Expr -> M String
@@ -143,7 +143,7 @@ compileExpr out (ExprInt i) = do
   return $ out ++ "=" ++ show i ++ ";\n"
 compileExpr out (ExprVar s) = do
   checkVar s $ do
-    return $ out ++ "=" ++ s ++ ";\n"
+    return $ out ++ "=" ++ mangleVar s ++ ";\n"
 compileExpr out (ExprApply fn args) = do
   checkFun fn (length args) $ do
     names <- mapM (\ _ -> genVar) args
@@ -152,12 +152,12 @@ compileExpr out (ExprApply fn args) = do
     let call = out ++ "=" ++ mangleFun fn ++ "(" ++ intercalate "," names ++ ");\n"
     return $ "{\n" ++ decls ++ concat binds ++ call ++ "}\n"
 compileExpr out (ExprAssign s x) = do
-  ev <- compileExpr s x
-  return $ ev ++ out ++ "=" ++ s ++ ";\n"
+  ev <- compileExpr (mangleVar s) x
+  return $ ev ++ out ++ "=" ++ mangleVar s ++ ";\n"
 compileExpr out (ExprBind s x body) = do
-  localVar [s] $ do
-    let decl = "int " ++ s ++ ";\n"
-    ev <- compileExpr s x
+  localVar [(s,"int")] $ do
+    let decl = "int " ++ mangleVar s ++ ";\n"
+    ev <- compileExpr (mangleVar s) x
     b <- compileExpr out body
     return $ "{\n" ++ decl ++ ev ++ b ++ "}"
 compileExpr out (ExprWhile x body) = do
@@ -175,7 +175,7 @@ compileExpr out (ExprBranch p tc ec) = do
 
 
 compileFun name (Func params body) = do
-  let paramBinds = intercalate "," $ map (\ s -> "int " ++ s) params
+  let paramBinds = intercalate "," $ map (\ (v, t) -> mangleType t ++ " " ++ mangleVar v) params
   let decl = "int _out;\n"
   localVar params $ do
     ev <- compileExpr "_out" body
@@ -206,7 +206,7 @@ compileDeclTypeBody (DeclType name ty) = return $ compileTypeBody name ty
 constructGlobalFunTable :: [Decl] -> M ()
 constructGlobalFunTable xs = forM_ xs $ \ decl -> do
   case decl of
-    DeclFunc name (Func params _) -> addFun name (length params)
+    DeclFunc name (Func params _) -> addFun name (map snd params)
     _                             -> return ()
 
 
@@ -226,7 +226,7 @@ makeFuncSyntax (P.ExprList params : body) = Func paramsSyntax bodySyntax
 makeFuncSyntax _  = error "syntax error"
 
 --makeParamSyntax (P.ExprList [P.ExprAtom (P.AtomSym s), P.ExprAtom (P.AtomSym "int")] : xs) = (s, TyInt) : makeParamSyntax xs
-makeParamSyntax (P.ExprAtom (P.AtomSym s) : xs) = s : makeParamSyntax xs
+makeParamSyntax (P.ExprList [P.ExprAtom (P.AtomSym s), P.ExprAtom (P.AtomSym t)] : xs) = (s,t) : makeParamSyntax xs
 makeParamSyntax [] = []
 makeParamSyntax _ = error "syntax error"
 
@@ -281,5 +281,5 @@ compileSource file src = unlines $ flip S.evalState emptyMEnv $ runM $ do
   xs <- mapM compileDeclType es
   xs' <- mapM compileDeclTypeBody es
   ys <- mapM compileDeclFunc es
-  return $ ps ++ ["\n"] ++ xs ++ xs' ++ ys
+  return $ xs ++ xs' ++ ps ++ ["\n"] ++ ys
   

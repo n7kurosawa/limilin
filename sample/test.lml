@@ -17,7 +17,10 @@
   (putc 33))
 
 
-(defproc fib (x)
+(defproc testfun ((x pair))
+  (putc 72))
+
+(defproc fib ((x int))
   (if (eq x 0) 
       0
       (if (eq x 1)
@@ -25,7 +28,7 @@
           (add (fib (sub x 1)) (fib (sub x 2))))))
 
 
-(defproc fib-loop (x)
+(defproc fib-loop ((x int))
   (let1 i 0
     (let1 x0 0
       (let1 x1 1
