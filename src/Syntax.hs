@@ -12,13 +12,17 @@ import qualified Parser as P
 data MEnv = MEnv 
   { menvGenerator :: Int
   , menvUserFun   :: (Map.Map String Int)
-  , menvVarTable   :: (Set.Set String)
+  , menvVarTable  :: (Set.Set String)
   }
 newtype M a = M { runM :: S.State MEnv a } deriving (Functor, Applicative, Monad, S.MonadState MEnv)
 
+data Type = TypeInt | TypeRecord [Bind]
+type TypeName = String
+type Bind = (String, TypeName)
 
+data Func = Func [String] Expr
 
-data Func = Func String [String] Expr
+data Decl = DeclFunc String Func | DeclType String Type
 
 
 -- todo: check built-in syntax
@@ -101,6 +105,9 @@ checkFun name ary m = do
 
 
 mangleFun f = "m_" ++ mangleName f
+mangleType t = "t_" ++ mangleName t
+mangleVar v = "v_" ++ mangleName v
+
 mangleName xs = concatMap conv xs 
  where
   conv '_' = "_u_"
@@ -116,6 +123,8 @@ mangleName xs = concatMap conv xs
   conv '!' = "_E_"
   conv '?' = "_q_"
   conv x = [x]
+
+
 
 showPrototypes :: M [String]
 showPrototypes = do
@@ -165,27 +174,52 @@ compileExpr out (ExprBranch p tc ec) = do
   return $ "{ int " ++ name ++ ";\n" ++ pred ++ "if (" ++ name ++ ") {\n" ++ tcev ++ "} else {\n" ++ ecev ++ "}\n}\n"
 
 
-compileFun (Func name params body) = do
+compileFun name (Func params body) = do
   let paramBinds = intercalate "," $ map (\ s -> "int " ++ s) params
   let decl = "int _out;\n"
   localVar params $ do
     ev <- compileExpr "_out" body
     return $ "int " ++ mangleFun name ++ "(" ++ paramBinds ++ ")\n{\n" ++ decl ++ ev ++ "return _out;\n}\n"
 
+compileType name TypeInt = "typedef int " ++ mangleType name ++ ";\n"
+compileType name (TypeRecord []) = "typedef int " ++ mangleType name ++ ";\n"
+compileType name (TypeRecord _)  = "typedef struct " ++ mangleType name ++ " " ++ mangleType name ++ ";\n"
+
+compileTypeBody name TypeInt = ""
+compileTypeBody name (TypeRecord []) = ""
+compileTypeBody name (TypeRecord xs) = "struct " ++ mangleType name ++ " {\n" ++ concatMap compileBind xs ++ "};\n"
+ where
+  compileBind (var, ty) = mangleType ty ++ " " ++ mangleVar var ++ ";\n"
+  
+
+compileDeclFunc (DeclFunc name fun) = compileFun name fun
+compileDeclFunc (DeclType _ _) = return ""
+
+compileDeclType (DeclFunc _ _) = return ""
+compileDeclType (DeclType name ty) = return $ compileType name ty
+
+compileDeclTypeBody (DeclFunc _ _) = return ""
+compileDeclTypeBody (DeclType name ty) = return $ compileTypeBody name ty
+
+
+
+constructGlobalFunTable :: [Decl] -> M ()
+constructGlobalFunTable xs = forM_ xs $ \ decl -> do
+  case decl of
+    DeclFunc name (Func params _) -> addFun name (length params)
+    _                             -> return ()
 
 
 
 
-constructGlobalFunTable :: [Func] -> M ()
-constructGlobalFunTable xs = forM_ xs $ \ (Func name params _) -> do
-  addFun name (length params)
+makeDeclSyntax :: P.Expr -> Decl
+makeDeclSyntax (P.ExprList (P.ExprAtom (P.AtomSym "defproc") : P.ExprAtom (P.AtomSym name) : body)) = DeclFunc name (makeFuncSyntax body)
+makeDeclSyntax (P.ExprList (P.ExprAtom (P.AtomSym "defrecord") : P.ExprAtom (P.AtomSym name) : body)) = DeclType name (makeRecordSyntax body)
+makeDeclSyntax _ = error "syntax error"
 
 
-
-
-
-makeFuncSyntax :: P.Expr -> Func
-makeFuncSyntax (P.ExprList (P.ExprAtom (P.AtomSym "defproc") : P.ExprAtom (P.AtomSym name) : P.ExprList params : body) ) = Func name paramsSyntax bodySyntax
+makeFuncSyntax :: [P.Expr] -> Func
+makeFuncSyntax (P.ExprList params : body) = Func paramsSyntax bodySyntax
  where
   paramsSyntax = makeParamSyntax params
   bodySyntax = ExprCompound $ map makeExprSyntax body
@@ -195,6 +229,14 @@ makeFuncSyntax _  = error "syntax error"
 makeParamSyntax (P.ExprAtom (P.AtomSym s) : xs) = s : makeParamSyntax xs
 makeParamSyntax [] = []
 makeParamSyntax _ = error "syntax error"
+
+
+makeRecordSyntax :: [P.Expr] -> Type
+makeRecordSyntax decls = TypeRecord (makeFieldDeclSyntax decls)
+
+makeFieldDeclSyntax [] = []
+makeFieldDeclSyntax (P.ExprList [(P.ExprAtom (P.AtomSym var)), (P.ExprAtom (P.AtomSym ty))] : xs) = (var, ty) : makeFieldDeclSyntax xs
+makeFieldDeclSyntax _ = error "syntax error"
 
 
 makeExprSyntax :: P.Expr -> Expr
@@ -223,19 +265,21 @@ makeAppExprSyntax x args = ExprApply x (map makeExprSyntax args)
 
 
 
-testCompileExpr x = S.evalState (runM (compileExpr "out" x)) emptyMEnv
-testCompileFun x = S.evalState (runM (compileFun x)) emptyMEnv
-test0 = Func "add" ["x", "y"] (ExprApply "add_int" [ExprVar "x", ExprVar "y"])
-test1 src = unlines $ flip S.evalState emptyMEnv $ runM $ do
-  let es = (map makeFuncSyntax (P.parse Nothing src))
-  constructGlobalFunTable es
-  xs <- mapM compileFun es
-  return $  xs
+--testCompileExpr x = S.evalState (runM (compileExpr "out" x)) emptyMEnv
+--testCompileFun x = S.evalState (runM (compileFun x)) emptyMEnv
+--test0 = Func "add" ["x", "y"] (ExprApply "add_int" [ExprVar "x", ExprVar "y"])
+--test1 src = unlines $ flip S.evalState emptyMEnv $ runM $ do
+--  let es = (map makeDeclSyntax (P.parse Nothing src))
+--  constructGlobalFunTable es
+--  xs <- mapM compileDecl es
+--  return $  xs
 
 compileSource file src = unlines $ flip S.evalState emptyMEnv $ runM $ do
-  let es = (map makeFuncSyntax (P.parse file src))
+  let es = (map makeDeclSyntax (P.parse file src))
   constructGlobalFunTable es
   ps <- showPrototypes
-  xs <- mapM compileFun es
-  return $ ps ++ ["\n"] ++ xs
+  xs <- mapM compileDeclType es
+  xs' <- mapM compileDeclTypeBody es
+  ys <- mapM compileDeclFunc es
+  return $ ps ++ ["\n"] ++ xs ++ xs' ++ ys
   

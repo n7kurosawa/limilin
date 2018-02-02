@@ -3,6 +3,8 @@
 
 #include <stdio.h>
 
+typedef int t_int;
+
 static inline int m_add(int x, int y) { return x + y; }
 static inline int m_sub(int x, int y) { return x - y; }
 static inline int m_mul(int x, int y) { return x * y; }
