@@ -3,10 +3,12 @@ module Parser(Expr(..), Atom(..), parseExprs, parse) where
 import Control.Applicative((<$>))
 import Data.Maybe(fromMaybe)
 import Data.Char(isDigit)
+import Numeric(readSigned, readHex, readOct, readInt)
 
 import qualified Text.Parsec as P
 import qualified Text.Parsec.Char as P
 import qualified Text.Parsec.Token as P
+import qualified Text.Parsec.Combinator as P
 
 
 data Expr = ExprList [Expr]
@@ -16,6 +18,7 @@ data Expr = ExprList [Expr]
 data Atom = AtomSym String
           | AtomStr String
           | AtomInt Int
+          | AtomKey String
   deriving (Eq, Show)
 
 
@@ -38,7 +41,7 @@ langDef = P.LanguageDef
 parseExprs = P.many parseExpr
 parseExpr = P.whiteSpace lexer >> (parseExprList P.<|> parseExprAtom)
 parseExprList = ExprList <$> P.parens lexer parseExprs
-parseExprAtom = ExprAtom <$> (parseAtomStr P.<|> parseAtomSym P.<?> "expression")
+parseExprAtom = ExprAtom <$> (parseAtomStr P.<|> parseAtomSym P.<|> parseHex P.<|> parseOct P.<|> parseBin P.<?> "expression")
 
 parseAtomStr = AtomStr <$> P.stringLiteral lexer
 
@@ -64,3 +67,31 @@ tryReadSignedInt xs       = tryReadInt xs
 tryReadInt xs 
   | all isDigit xs  = Just ((read xs) :: Int)
   | otherwise       = Nothing
+
+parseHex = P.try $ do
+  P.char '#'
+  P.oneOf "hHxX"
+  sgn <- P.optionMaybe (P.oneOf "+-")
+  hs <- P.many1 (P.oneOf "0123456789abcdefgABCDEFG")
+  case sgn of
+    Nothing -> return $ AtomInt $ fst $ head $ readHex hs
+    Just s  -> return $ AtomInt $ fst $ head $ readSigned readHex (s:hs)
+
+parseOct = P.try $ do
+  P.char '#'
+  P.oneOf "oO"
+  sgn <- P.optionMaybe (P.oneOf "+-")
+  hs <- P.many1 (P.oneOf "012345678")
+  case sgn of
+    Nothing -> return $ AtomInt $ fst $ head $ readOct hs
+    Just s  -> return $ AtomInt $ fst $ head $ readSigned readOct (s:hs)
+
+parseBin = P.try $ do
+  P.char '#'
+  P.oneOf "bB"
+  sgn <- P.optionMaybe (P.oneOf "+-")
+  hs <- P.many1 (P.oneOf "01")
+  let readBin = readInt 2 (`elem` "01") (\s -> if s == '0' then 0 else 1) 
+  case sgn of
+    Nothing -> return $ AtomInt $ fst $ head $ readBin hs
+    Just s  -> return $ AtomInt $ fst $ head $ readSigned readBin (s:hs)
