@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 typedef int t_int;
+typedef int t_unit;
 
 static inline int m_add(int x, int y) { return x + y; }
 static inline int m_sub(int x, int y) { return x - y; }

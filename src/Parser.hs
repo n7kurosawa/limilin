@@ -41,7 +41,7 @@ langDef = P.LanguageDef
 parseExprs = P.many parseExpr
 parseExpr = P.whiteSpace lexer >> (parseExprList P.<|> parseExprAtom)
 parseExprList = ExprList <$> P.parens lexer parseExprs
-parseExprAtom = ExprAtom <$> (parseAtomStr P.<|> parseAtomSym P.<|> parseHex P.<|> parseOct P.<|> parseBin P.<?> "expression")
+parseExprAtom = ExprAtom <$> (parseAtomStr P.<|> parseAtomSym P.<|> parseSharp P.<|> parseKey P.<?> "expression")
 
 parseAtomStr = AtomStr <$> P.stringLiteral lexer
 
@@ -67,6 +67,8 @@ tryReadSignedInt xs       = tryReadInt xs
 tryReadInt xs 
   | all isDigit xs  = Just ((read xs) :: Int)
   | otherwise       = Nothing
+
+parseSharp = parseHex P.<|> parseOct P.<|> parseBin
 
 parseHex = P.try $ do
   P.char '#'
@@ -95,3 +97,8 @@ parseBin = P.try $ do
   case sgn of
     Nothing -> return $ AtomInt $ fst $ head $ readBin hs
     Just s  -> return $ AtomInt $ fst $ head $ readSigned readBin (s:hs)
+
+parseKey = P.try $ do
+  P.char ':'
+  ss <- P.identifier lexer
+  return $ AtomKey (':':ss)

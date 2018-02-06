@@ -1,8 +1,9 @@
 
 (defrecord pair (fst int) (snd int))
 
-(defproc say-hello ()
-  (putc 72)
+(defproc say-hello () :> unit
+  ;(putc 72)
+  (putc #h48)
   (putc 101)
   (putc 108)
   (putc 108)
@@ -17,10 +18,10 @@
   (putc 33))
 
 
-(defproc testfun ((x pair))
+(defproc testfun ((x pair)) :> unit
   (putc 72))
 
-(defproc fib ((x int))
+(defproc fib ((x int)) :> int
   (if (eq x 0) 
       0
       (if (eq x 1)
@@ -28,7 +29,7 @@
           (add (fib (sub x 1)) (fib (sub x 2))))))
 
 
-(defproc fib-loop ((x int))
+(defproc fib-loop ((x int)) :> int
   (let1 i 0
     (let1 x0 0
       (let1 x1 1
@@ -40,7 +41,7 @@
         x0))))
 
 
-(defproc main ()
+(defproc main () :> unit
   (say-hello) ; ==> Hello, world!
   (newline)
   (putint (fib 10)) ; ==> 55
