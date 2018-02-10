@@ -9,6 +9,9 @@ import qualified Data.Set as Set
 
 import qualified Parser as P
 
+import Debug.Trace(trace)
+
+
 data MEnv = MEnv 
   { menvGenerator :: Int
   , menvUserFun   :: (Map.Map String Func)
@@ -119,6 +122,7 @@ addFun name fn = do
     then error ("redefinition of function: " ++ name)
     else S.put $ menv{ menvUserFun = Map.insert name fn fnmap }
 
+
 checkFun :: String -> Int -> M a -> M a
 checkFun name i m = do
   menv <- S.get
@@ -198,7 +202,7 @@ typeCheck rty (ExprApply fn args) = do
         return $ all id (p:ps)
 typeCheck rty (ExprAssign x y) = do
   vty <- typeOfVar x
-  p <- (== x) <$> getExprType y
+  p <- (== vty) <$> getExprType y
   return $ p && (rty == "unit" || vty == rty)
 typeCheck rty (ExprBind s x body) = do
   ty <- getExprType x
@@ -216,6 +220,15 @@ typeCheck rty (ExprBranch pred tc ec) = do
 typeCheck rty e = do
   ty <- getExprType e
   return $ rty == "unit" || rty == ty
+
+
+typeCheckFun (DeclFunc name (Func ps rty expr)) = do
+  localVar ps $ do
+    ok <- typeCheck rty expr
+    if ok then return True else error $ "type error at " ++ name
+typeCheckFun _ = return True
+
+
 
 compileAssignOut Nothing v  = "(void)"++"(" ++ v ++ ");\n"
 compileAssignOut (Just x) v = x ++ "=" ++ v ++ ";\n"
@@ -303,8 +316,6 @@ constructGlobalFunTable xs = forM_ xs $ \ decl -> do
     _                -> return ()
 
 
-
-
 makeDeclSyntax :: P.Expr -> Decl
 makeDeclSyntax (P.ExprList (P.ExprAtom (P.AtomSym "defproc") : P.ExprAtom (P.AtomSym name) : body)) = DeclFunc name (makeFuncSyntax body)
 makeDeclSyntax (P.ExprList (P.ExprAtom (P.AtomSym "defrecord") : P.ExprAtom (P.AtomSym name) : body)) = DeclType name (makeRecordSyntax body)
@@ -371,8 +382,13 @@ compileSource file src = unlines $ flip S.evalState emptyMEnv $ runM $ do
   let es = (map makeDeclSyntax (P.parse file src))
   constructGlobalFunTable es
   ps <- showPrototypes
-  xs <- mapM compileDeclType es
-  xs' <- mapM compileDeclTypeBody es
-  ys <- mapM compileDeclFunc es
-  return $ xs ++ xs' ++ ps ++ ["\n"] ++ ys
+  typeok <- all id <$> mapM typeCheckFun es 
+  if not typeok
+    then do
+      error "type error"
+    else do
+      xs <- mapM compileDeclType es
+      xs' <- mapM compileDeclTypeBody es
+      ys <- mapM compileDeclFunc es
+      return $ xs ++ xs' ++ ps ++ ["\n"] ++ ys
   
