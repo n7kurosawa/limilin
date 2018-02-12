@@ -2,11 +2,11 @@ module Syntax where
 
 import qualified Parser as P
 
-data Type = TypeUnit | TypeInt | TypeRecord [Bind] deriving (Eq, Ord)
-type TypeName = String
-type Bind = (String, TypeName)
+data Type = TypeUnit | TypeInt | TypeRecord [Bind] | TypeId String | TypeHole deriving (Eq, Ord, Show)
+-- type TypeName = String
+type Bind = (String, Type)
 
-data Func = Func [Bind] TypeName Expr | ExternalFunc [TypeName] TypeName
+data Func = Func [Bind] Type Expr | ExternalFunc [Type] Type
 
 data Decl = DeclFunc String Func | DeclType String Type
 
@@ -29,14 +29,14 @@ makeDeclSyntax _ = error "syntax error"
 
 
 makeFuncSyntax :: [P.Expr] -> Func
-makeFuncSyntax (P.ExprList params : P.ExprAtom (P.AtomKey ":>") : P.ExprAtom (P.AtomSym rty) : body) = Func paramsSyntax rty bodySyntax
+makeFuncSyntax (P.ExprList params : P.ExprAtom (P.AtomKey ":>") : P.ExprAtom (P.AtomSym rty) : body) = Func paramsSyntax (TypeId rty) bodySyntax
  where
   paramsSyntax = makeParamSyntax params
   bodySyntax = ExprCompound $ map makeExprSyntax body
 makeFuncSyntax _  = error "syntax error"
 
 --makeParamSyntax (P.ExprList [P.ExprAtom (P.AtomSym s), P.ExprAtom (P.AtomSym "int")] : xs) = (s, TyInt) : makeParamSyntax xs
-makeParamSyntax (P.ExprList [P.ExprAtom (P.AtomSym s), P.ExprAtom (P.AtomSym t)] : xs) = (s,t) : makeParamSyntax xs
+makeParamSyntax (P.ExprList [P.ExprAtom (P.AtomSym s), P.ExprAtom (P.AtomSym t)] : xs) = (s, TypeId t) : makeParamSyntax xs
 makeParamSyntax [] = []
 makeParamSyntax _ = error "syntax error"
 
@@ -45,7 +45,7 @@ makeRecordSyntax :: [P.Expr] -> Type
 makeRecordSyntax decls = TypeRecord (makeFieldDeclSyntax decls)
   
 makeFieldDeclSyntax [] = []
-makeFieldDeclSyntax (P.ExprList [(P.ExprAtom (P.AtomSym var)), (P.ExprAtom (P.AtomSym ty))] : xs) = (var, ty) : makeFieldDeclSyntax xs
+makeFieldDeclSyntax (P.ExprList [(P.ExprAtom (P.AtomSym var)), (P.ExprAtom (P.AtomSym ty))] : xs) = (var,  TypeId ty) : makeFieldDeclSyntax xs
 makeFieldDeclSyntax _ = error "syntax error"
   
   

@@ -16,16 +16,18 @@ import Debug.Trace(trace)
 
 
 data MEnv = MEnv 
-  { menvGenerator :: Int
-  , menvUserFun   :: (Map.Map String Func)
-  , menvVarTable  :: (Map.Map String TypeName)
+  { menvGenerator  :: Int
+  , menvUserFun    :: (Map.Map String Func)
+  , menvVarTable   :: (Map.Map String Type)
+  , menvTypeAlias  :: (Map.Map String Type)
+  , menvTypeEntity :: (Map.Map String Type)
   }
 newtype M a = M { runM :: S.State MEnv a } deriving (Functor, Applicative, Monad, S.MonadState MEnv)
 
 
 -- todo: check built-in syntax
 
-builtinFuns = map (\ (name, pty, rty) -> (name, ExternalFunc pty rty))
+builtinFuns = map (\ (name, pty, rty) -> (name, ExternalFunc (map TypeId pty) (TypeId rty)))
   [ ("add",["int","int"],"int")
   , ("sub",["int","int"],"int")
   , ("mul",["int","int"],"int")
@@ -47,8 +49,9 @@ builtinFuns = map (\ (name, pty, rty) -> (name, ExternalFunc pty rty))
   , ("newline",[],"int")
   ]
 
+builtinTypes = [("int", TypeInt), ("unit", TypeUnit)]
 
-emptyMEnv = MEnv 0 (Map.fromList builtinFuns) (Map.empty)
+emptyMEnv = MEnv 0 (Map.fromList builtinFuns) (Map.empty) (Map.fromList builtinTypes) (Map.empty)
 
 
 
@@ -74,14 +77,14 @@ checkVar name m = do
   v <- menvVarTable <$> S.get
   if Map.member name v then m else error ("unknown variable: "++name)
 
-typeOfVar :: String -> M TypeName
+typeOfVar :: String -> M Type
 typeOfVar name = do
   v <- menvVarTable <$> S.get
   case Map.lookup name v of
     Just t  -> return t
     Nothing -> error ("unknown variable: "++name)
 
-typeOfFunRet :: String -> M TypeName
+typeOfFunRet :: String -> M Type
 typeOfFunRet name = do
   v <- menvUserFun <$> S.get
   case Map.lookup name v of
@@ -89,7 +92,7 @@ typeOfFunRet name = do
     Just (ExternalFunc _ rty) -> return rty
     _                         -> error ("unknown function:" ++ name)
 
-getFunTypes :: String -> M (Maybe ([TypeName], TypeName))
+getFunTypes :: String -> M (Maybe ([Type], Type))
 getFunTypes name = do
   v <- menvUserFun <$> S.get
   case Map.lookup name v of
@@ -106,6 +109,13 @@ addFun name fn = do
     then error ("redefinition of function: " ++ name)
     else S.put $ menv{ menvUserFun = Map.insert name fn fnmap }
 
+addNewType :: String -> Type -> M ()
+addNewType name ty = do
+  menv <- S.get
+  let tymap = menvTypeEntity menv
+  if Map.member name tymap
+    then error ("redefiniton of type: " ++ name)
+    else S.put $ menv{ menvTypeEntity = Map.insert name ty tymap }
 
 checkFun :: String -> Int -> M a -> M a
 checkFun name i m = do
@@ -120,8 +130,12 @@ checkFun name i m = do
     Nothing       -> error "undefiend function"
 
 
+
 mangleFun f = "m_" ++ mangleName f
-mangleType t = "t_" ++ mangleName t
+mangleType TypeUnit = "int"
+mangleType TypeInt = "int"
+mangleType (TypeId t) = "t_" ++ mangleName t
+mangleType _ = error "internal: mangleType"
 mangleVar v = "m_" ++ mangleName v
 
 mangleName xs = concatMap conv xs 
@@ -141,7 +155,6 @@ mangleName xs = concatMap conv xs
   conv x = [x]
 
 
-
 showPrototypes :: M [String]
 showPrototypes = do
   menv <- S.get
@@ -152,27 +165,52 @@ showPrototypes = do
     --ExternalFun pty rty -> mangleType rty ++ " " ++ mangleFun name ++ "(" ++ intercalate "," (map mangleType pty) ++ ");"
     ExternalFunc _ _ -> ""
 
-  
-getExprType :: Expr -> M TypeName
-getExprType (ExprCompound [])   = return "unit" 
+
+unAliasType :: Type -> M Type
+unAliasType t@(TypeId s) = do
+  m <- menvTypeAlias <$> S.get
+  case Map.lookup s m of
+    Just u  -> unAliasType u
+    Nothing -> return t
+unAliasType t = return t
+
+entityOfType :: Type -> M Type
+entityOfType t = entityOfTypeWork =<< unAliasType t
+entityOfTypeWork t@(TypeId s) = do
+  m <- menvTypeEntity <$> S.get
+  case Map.lookup s m of
+    Just u -> entityOfType u
+    Nothing -> error $ "error: type " ++ show s ++ " is  without concrete entity"
+entityOfTypeWork t = return t
+
+matchType :: Type -> Type -> M Bool
+matchType ty1 ty2 = (==) <$> unAliasType ty1 <*> unAliasType ty2
+
+
+
+getExprType :: Expr -> M Type
+getExprType (ExprCompound [])   = return TypeUnit
 getExprType (ExprCompound xs)   = getExprType (last xs)
-getExprType (ExprInt _)         = return "int"
+getExprType (ExprInt _)         = return TypeInt
 getExprType (ExprVar s)         = typeOfVar s
 getExprType (ExprApply fn args) = typeOfFunRet fn
 getExprType (ExprAssign s x)    = typeOfVar s
-getExprType (ExprBind s x body) = getExprType body
-getExprType (ExprWhile x body)  = return "unit"
+getExprType (ExprBind s x body) = do
+  xty <- getExprType x
+  localVar [(s,xty)] $ getExprType body
+getExprType (ExprWhile x body)  = return TypeUnit
 getExprType (ExprBranch c tc ec) = do
   tcty <- getExprType tc
   ecty <- getExprType ec
-  if ecty == tcty then return tcty else return "unit"
+  if ecty == tcty then return tcty else return TypeUnit
 
 
-typeCheck :: TypeName -> Expr -> M Bool
-typeCheck rty (ExprCompound []) = return $ rty == "unit"
+typeCheck :: Type -> Expr -> M Bool
+typeCheck rty (ExprCompound []) = matchType rty TypeUnit
 typeCheck rty (ExprCompound xs) = do
-  ps <- mapM (typeCheck "unit") xs
+  ps <- mapM (typeCheck TypeUnit) xs
   p  <- typeCheck rty (last xs)
+  {- trace (show rty ++ "<->"++show xs ++ ":" ++ show ps) $ -}
   return $ all id (p:ps)
 typeCheck rty (ExprApply fn args) = do
   mty <- getFunTypes fn
@@ -182,34 +220,36 @@ typeCheck rty (ExprApply fn args) = do
       | length args /= length xs  -> return False
       | otherwise                 -> do
         ps <- forM (zip xs args) (uncurry typeCheck)
-        let p = rty == "unit" || x == rty
+        p <- (||) <$> (matchType rty TypeUnit) <*> (matchType rty x)
         return $ all id (p:ps)
 typeCheck rty (ExprAssign x y) = do
   vty <- typeOfVar x
-  p <- (== vty) <$> getExprType y
-  return $ p && (rty == "unit" || vty == rty)
+  p <- matchType vty =<< getExprType y
+  q <- (||) <$> (matchType rty TypeUnit) <*> (matchType rty vty)
+  return $ p && q
 typeCheck rty (ExprBind s x body) = do
   ty <- getExprType x
   localVar [(s, ty)] $ do
     typeCheck rty body
 typeCheck rty (ExprWhile pred body) = do
-  pp <- typeCheck "int" pred
+  pp <- typeCheck TypeInt pred
   pb <- typeCheck rty body
   return (pp && pb)
 typeCheck rty (ExprBranch pred tc ec) = do
-  pp <- typeCheck "int" pred
+  pp <- typeCheck TypeInt pred
   ptc <- typeCheck rty tc
   pec <- typeCheck rty ec
   return (pp && ptc && pec)
 typeCheck rty e = do
   ty <- getExprType e
-  return $ rty == "unit" || rty == ty
+  (||) <$> matchType rty TypeUnit <*> matchType rty ty
 
 
 typeCheckFun (DeclFunc name (Func ps rty expr)) = do
   localVar ps $ do
+    lty <- getExprType expr
     ok <- typeCheck rty expr
-    if ok then return True else error $ "type error at " ++ name
+    if ok then return True else trace (show expr) $ error $ "type error at " ++ name
 typeCheckFun _ = return True
 
 
@@ -271,25 +311,25 @@ compileFun name (Func params rty body) = do
     ev <- compileExpr (Just "_out") body
     return $ mangleType rty ++ " " ++ mangleFun name ++ "(" ++ paramBinds ++ ")\n{\n" ++ decl ++ ev ++ "return _out;\n}\n"
 
-compileType name TypeInt = "typedef int " ++ mangleType name ++ ";\n"
-compileType name (TypeRecord []) = "typedef int " ++ mangleType name ++ ";\n"
-compileType name (TypeRecord _)  = "typedef struct " ++ mangleType name ++ " " ++ mangleType name ++ ";\n"
+compileType name (TypeRecord []) = return $ "typedef int " ++ mangleType (TypeId name) ++ ";\n"
+compileType name (TypeRecord _)  = return $ "typedef struct " ++ mangleType (TypeId name) ++ " " ++ mangleType (TypeId name) ++ ";\n"
+compileType name t = return $ "typedef " ++ mangleType t ++ " " ++ mangleType (TypeId name) ++ ";\n"
 
-compileTypeBody name TypeInt = ""
-compileTypeBody name (TypeRecord []) = ""
-compileTypeBody name (TypeRecord xs) = "struct " ++ mangleType name ++ " {\n" ++ concatMap compileBind xs ++ "};\n"
+compileTypeBody name (TypeRecord []) = return ""
+compileTypeBody name (TypeRecord xs) = return $ "struct " ++ mangleType (TypeId name) ++ " {\n" ++ concatMap compileBind xs ++ "};\n"
  where
   compileBind (var, ty) = mangleType ty ++ " " ++ mangleVar var ++ ";\n"
+compileTypeBody name _ = return ""
   
 
 compileDeclFunc (DeclFunc name fun) = compileFun name fun
 compileDeclFunc (DeclType _ _) = return ""
 
 compileDeclType (DeclFunc _ _) = return ""
-compileDeclType (DeclType name ty) = return $ compileType name ty
+compileDeclType (DeclType name ty) = compileType name ty
 
 compileDeclTypeBody (DeclFunc _ _) = return ""
-compileDeclTypeBody (DeclType name ty) = return $ compileTypeBody name ty
+compileDeclTypeBody (DeclType name ty) = compileTypeBody name ty
 
 
 
@@ -299,10 +339,16 @@ constructGlobalFunTable xs = forM_ xs $ \ decl -> do
     DeclFunc name fn -> addFun name fn
     _                -> return ()
 
+constructTypeTable :: [Decl] -> M ()
+constructTypeTable xs = forM_ xs $ \ decl -> do
+  case decl of
+    DeclType name ty -> addNewType name ty
+    _                -> return ()
 
 
 compileSource file src = unlines $ flip S.evalState emptyMEnv $ runM $ do
   let es = parseToSyntax file src
+  constructTypeTable es
   constructGlobalFunTable es
   ps <- showPrototypes
   typeok <- all id <$> mapM typeCheckFun es 
